@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import ConnectWallet from './ConnectWallet';
 import CreateAuctionForm from './CreateAuctionForm';
 
-const CreatorDashboard = ({ user, onLogout, auctions, addAuction, updateAuction, deleteAuction }) => {
+const CreatorDashboard = ({ user, onBack, onLogout, auctions, addAuction, updateAuction, deleteAuction }) => {
   const [provider, setProvider] = useState(null);
   const [userAccount, setUserAccount] = useState(null);
   const [view, setView] = useState('list'); // 'list' | 'create' | 'manage' | 'results'
@@ -139,7 +139,10 @@ const CreatorDashboard = ({ user, onLogout, auctions, addAuction, updateAuction,
         <div className="nav-actions">
           <span className="user-greeting">Hi, {user.name}</span>
           <ConnectWallet onConnect={handleConnect} />
-          <button className="btn ghost-btn" onClick={onLogout}>← Back</button>
+          <button className="btn ghost-btn" onClick={() => {
+            if (view === 'manage' || view === 'create' || view === 'results') { setView('list'); }
+            else { onBack(); }
+          }}>← Back</button>
         </div>
       </nav>
 

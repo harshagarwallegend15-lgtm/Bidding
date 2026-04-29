@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CreatorDashboard from './components/CreatorDashboard';
 import BidderDashboard from './components/BidderDashboard';
 import BrowseAuctions from './components/BrowseAuctions';
@@ -87,9 +87,33 @@ const HowItWorks = () => {
 /*                  MAIN APP                   */
 /* ═══════════════════════════════════════════ */
 function App() {
-  const [page, setPage] = useState('home');
+  // ══════ NAVIGATION WITH HISTORY ══════
+  const [page, setPageRaw] = useState('home');
+  const [pageHistory, setPageHistory] = useState([]);
   const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
+  const [authMode, setAuthMode] = useState('signup');
+
+  // Navigate forward — push current page onto history
+  const navigateTo = useCallback((newPage) => {
+    setPageRaw(prev => {
+      setPageHistory(h => [...h, prev]);
+      return newPage;
+    });
+  }, []);
+
+  // Go back one step
+  const goBack = useCallback(() => {
+    setPageHistory(prev => {
+      if (prev.length === 0) {
+        setPageRaw('home');
+        return prev;
+      }
+      const history = [...prev];
+      const lastPage = history.pop();
+      setPageRaw(lastPage);
+      return history;
+    });
+  }, []);
 
   // Sign-up / Login form state
   const [formName, setFormName] = useState('');
@@ -105,6 +129,46 @@ function App() {
   useEffect(() => { saveToStorage(auctions); }, [auctions]);
   useEffect(() => { saveUsers(registeredUsers); }, [registeredUsers]);
 
+  // ══════ CROSS-TAB AUTO-SYNC ══════
+  // When another tab/window changes localStorage, this tab auto-updates.
+  // This works across multiple browser tabs on the SAME device.
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const updated = JSON.parse(e.newValue);
+          setAuctions(updated);
+        } catch (err) { /* ignore parse errors */ }
+      }
+      if (e.key === USERS_KEY && e.newValue) {
+        try {
+          const updated = JSON.parse(e.newValue);
+          setRegisteredUsers(updated);
+        } catch (err) { /* ignore */ }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // ══════ POLLING AUTO-REFRESH (same tab fallback) ══════
+  // Polls localStorage every 3 seconds to pick up changes from other tabs.
+  // The storage event doesn't fire for the tab that made the change,
+  // so this ensures data stays fresh even within the same tab.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const fresh = loadFromStorage();
+      setAuctions(prev => {
+        const prevStr = JSON.stringify(prev);
+        const freshStr = JSON.stringify(fresh);
+        if (prevStr !== freshStr) return fresh;
+        return prev;
+      });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ══════ AUCTION OPERATIONS ══════
   const addAuction = (auction) => {
     setAuctions(prev => [...prev, auction]);
   };
@@ -117,7 +181,6 @@ function App() {
     return auctions.find(a => a.code.toUpperCase() === code.toUpperCase());
   };
 
-  // Allow multiple bidders — identify by name (not just wallet address)
   const addParticipant = (auctionId, participant) => {
     setAuctions(prev => prev.map(a => {
       if (a.id === auctionId) {
@@ -141,13 +204,11 @@ function App() {
       setAuctions(prev => {
         const now = Date.now();
         return prev.filter(a => {
-          if (a.status === 'ended' && a.endedAt && (now - a.endedAt > 60000)) {
-            return false; // remove after 60s
-          }
+          if (a.status === 'ended' && a.endedAt && (now - a.endedAt > 60000)) return false;
           return true;
         });
       });
-    }, 10000); // check every 10s
+    }, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -158,15 +219,12 @@ function App() {
     if (!formName.trim()) { setFormError('Please enter your name.'); return; }
     if (!formPassword || formPassword.length < 4) { setFormError('Password must be at least 4 characters.'); return; }
     if (!formRole) { setFormError('Please select a role.'); return; }
-
-    // Check if name already taken
     const exists = registeredUsers.find(u => u.name.toLowerCase() === formName.trim().toLowerCase());
     if (exists) { setFormError('That name is already taken. Try logging in or use a different name.'); return; }
-
     const newUser = { name: formName.trim(), password: formPassword, role: formRole };
     setRegisteredUsers(prev => [...prev, newUser]);
     setUser(newUser);
-    setPage(formRole);
+    navigateTo(formRole);
   };
 
   const handleLogin = (e) => {
@@ -174,19 +232,18 @@ function App() {
     setFormError('');
     if (!formName.trim()) { setFormError('Please enter your name.'); return; }
     if (!formPassword) { setFormError('Please enter your password.'); return; }
-
     const found = registeredUsers.find(
       u => u.name.toLowerCase() === formName.trim().toLowerCase() && u.password === formPassword
     );
     if (!found) { setFormError('Invalid name or password.'); return; }
-
     setUser(found);
-    setPage(found.role);
+    navigateTo(found.role);
   };
 
   const handleLogout = () => {
     setUser(null);
-    setPage('home');
+    setPageRaw('home');
+    setPageHistory([]);
     setFormName('');
     setFormPassword('');
     setFormRole('');
@@ -194,8 +251,8 @@ function App() {
   };
 
   const handleBrowseJoin = (auction) => {
-    if (!user) { setFormRole('bidder'); setPage('signup'); }
-    else { setPage('bidder'); }
+    if (!user) { setFormRole('bidder'); navigateTo('auth'); }
+    else { navigateTo('bidder'); }
   };
 
   const goToAuth = (mode, role = '') => {
@@ -205,7 +262,7 @@ function App() {
     setFormName('');
     setFormPassword('');
     setShowPassword(false);
-    setPage('auth');
+    navigateTo('auth');
   };
 
   /* ── HOME PAGE ── */
@@ -216,7 +273,7 @@ function App() {
         <nav className="hero-nav">
           <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2></div>
           <div className="nav-actions">
-            <button className="btn ghost-btn" onClick={() => setPage('browse')}>Browse Auctions</button>
+            <button className="btn ghost-btn" onClick={() => navigateTo('browse')}>Browse Auctions</button>
             <button className="btn ghost-btn" onClick={() => goToAuth('login')}>Log In</button>
             <button className="btn primary-btn" onClick={() => goToAuth('signup')}>Sign Up</button>
           </div>
@@ -242,11 +299,11 @@ function App() {
           <section className="home-auctions-preview">
             <div className="preview-header">
               <h2 className="section-title">Recent Auctions</h2>
-              <button className="btn ghost-btn" onClick={() => setPage('browse')}>View All →</button>
+              <button className="btn ghost-btn" onClick={() => navigateTo('browse')}>View All →</button>
             </div>
             <div className="auction-grid">
               {auctions.slice(-3).reverse().map(a => (
-                <div key={a.id} className="glass-card auction-card" onClick={() => setPage('browse')}>
+                <div key={a.id} className="glass-card auction-card" onClick={() => navigateTo('browse')}>
                   <img src={a.imageUrl} alt={a.title} className="auction-card-img" />
                   <div className="auction-card-body">
                     <h4>{a.title}</h4>
@@ -285,11 +342,11 @@ function App() {
         <nav className="hero-nav">
           <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2></div>
           <div className="nav-actions">
-            <button className="btn ghost-btn" onClick={() => setPage('home')}>← Home</button>
+            <button className="btn ghost-btn" onClick={goBack}>← Back</button>
             <button className="btn primary-btn" onClick={() => goToAuth('signup')}>Get Started</button>
           </div>
         </nav>
-        <main className="main-content"><BrowseAuctions auctions={auctions} onJoin={handleBrowseJoin} onBack={() => setPage('home')} /></main>
+        <main className="main-content"><BrowseAuctions auctions={auctions} onJoin={handleBrowseJoin} onBack={goBack} /></main>
         <footer className="footer"><p>Powered by <strong>Ethereum</strong> Smart Contracts &nbsp;·&nbsp; Built for Web3</p></footer>
       </div>
     );
@@ -306,13 +363,10 @@ function App() {
           <div className="login-icon">🛡️</div>
           <h1>{isLogin ? 'Log In' : 'Sign Up'}</h1>
           <p className="subtitle">{isLogin ? 'Welcome back! Enter your credentials.' : 'Create your account to get started.'}</p>
-
-          {/* Auth Mode Toggle */}
           <div className="auth-toggle">
             <button className={`auth-toggle-btn ${!isLogin ? 'active' : ''}`} onClick={() => { setAuthMode('signup'); setFormError(''); }}>Sign Up</button>
             <button className={`auth-toggle-btn ${isLogin ? 'active' : ''}`} onClick={() => { setAuthMode('login'); setFormError(''); }}>Log In</button>
           </div>
-
           <form onSubmit={isLogin ? handleLogin : handleSignup}>
             <div className="input-group">
               <label htmlFor="authName">Your Name</label>
@@ -321,21 +375,10 @@ function App() {
             <div className="input-group">
               <label htmlFor="authPassword">Password</label>
               <div className="password-input-wrapper">
-                <input
-                  id="authPassword"
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder={isLogin ? 'Enter your password' : 'Create a password (min 4 chars)'}
-                  value={formPassword}
-                  onChange={e => setFormPassword(e.target.value)}
-                  required
-                />
-                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)}>
-                  {showPassword ? '🙈' : '👁️'}
-                </button>
+                <input id="authPassword" type={showPassword ? 'text' : 'password'} placeholder={isLogin ? 'Enter your password' : 'Create a password (min 4 chars)'} value={formPassword} onChange={e => setFormPassword(e.target.value)} required />
+                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)}>{showPassword ? '🙈' : '👁️'}</button>
               </div>
             </div>
-
-            {/* Role selector — only for signup */}
             {!isLogin && (
               <div className="role-selector">
                 <div className={`role-card ${formRole === 'creator' ? 'selected' : ''}`} onClick={() => setFormRole('creator')}>
@@ -346,21 +389,18 @@ function App() {
                 </div>
               </div>
             )}
-
             <button type="submit" className="btn primary-btn full-width pulse-effect">
               {isLogin ? 'Log In' : `Sign Up as ${formRole === 'creator' ? 'Creator' : formRole === 'bidder' ? 'Bidder' : '...'}`}
             </button>
             {formError && <p className="error-text center">{formError}</p>}
           </form>
-
           <p className="auth-switch">
             {isLogin ? "Don't have an account? " : 'Already have an account? '}
             <button className="link-btn" onClick={() => { setAuthMode(isLogin ? 'signup' : 'login'); setFormError(''); }}>
               {isLogin ? 'Sign Up' : 'Log In'}
             </button>
           </p>
-
-          <button className="btn ghost-btn" style={{ marginTop: '0.5rem' }} onClick={() => setPage('home')}>← Back to Home</button>
+          <button className="btn ghost-btn" style={{ marginTop: '0.5rem' }} onClick={goBack}>← Back</button>
         </div>
       </div>
     );
@@ -368,12 +408,12 @@ function App() {
 
   /* ── CREATOR DASHBOARD ── */
   if (page === 'creator' && user) {
-    return (<><ParticleCanvas /><CreatorDashboard user={user} onLogout={handleLogout} auctions={auctions} addAuction={addAuction} updateAuction={updateAuction} deleteAuction={deleteAuction} /></>);
+    return (<><ParticleCanvas /><CreatorDashboard user={user} onBack={goBack} onLogout={handleLogout} auctions={auctions} addAuction={addAuction} updateAuction={updateAuction} deleteAuction={deleteAuction} /></>);
   }
 
   /* ── BIDDER DASHBOARD ── */
   if (page === 'bidder' && user) {
-    return (<><ParticleCanvas /><BidderDashboard user={user} onLogout={handleLogout} findAuctionByCode={findAuctionByCode} addParticipant={addParticipant} auctions={auctions} /></>);
+    return (<><ParticleCanvas /><BidderDashboard user={user} onBack={goBack} onLogout={handleLogout} findAuctionByCode={findAuctionByCode} addParticipant={addParticipant} auctions={auctions} /></>);
   }
 
   return null;

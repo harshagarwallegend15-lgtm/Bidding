@@ -34,7 +34,7 @@ const CountdownTimer = ({ deadline, label }) => {
 
 const COLORS = ['#6366f1', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#f43f5e'];
 
-const BidderDashboard = ({ user, onLogout, findAuctionByCode, addParticipant, auctions }) => {
+const BidderDashboard = ({ user, onBack, onLogout, findAuctionByCode, addParticipant, auctions }) => {
   const [provider, setProvider] = useState(null);
   const [userAccount, setUserAccount] = useState(null);
   const [auctionCode, setAuctionCode] = useState('');
@@ -121,7 +121,7 @@ const BidderDashboard = ({ user, onLogout, findAuctionByCode, addParticipant, au
           <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2><span className="role-badge bidder-badge">Bidder</span></div>
           <div className="nav-actions">
             <span className="user-greeting">Hi, {user.name}</span>
-            <button className="btn ghost-btn" onClick={onLogout}>← Back</button>
+            <button className="btn ghost-btn" onClick={onBack}>← Back</button>
           </div>
         </nav>
         <main className="main-content">
@@ -170,7 +170,7 @@ const BidderDashboard = ({ user, onLogout, findAuctionByCode, addParticipant, au
         <div className="nav-actions">
           <div className="auction-code-badge">{joinedAuction.code}</div>
           <ConnectWallet onConnect={handleConnect} />
-          <button className="btn ghost-btn" onClick={onLogout}>← Back</button>
+          <button className="btn ghost-btn" onClick={() => { setJoinedAuctionId(null); }}>← Back</button>
         </div>
       </nav>
 
