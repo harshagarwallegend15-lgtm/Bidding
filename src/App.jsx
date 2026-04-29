@@ -2,37 +2,25 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CreatorDashboard from './components/CreatorDashboard';
 import BidderDashboard from './components/BidderDashboard';
 import BrowseAuctions from './components/BrowseAuctions';
+import {
+  isFirebaseConfigured,
+  listenToAuctions, listenToUsers,
+  saveAuctionsToCloud, saveUsersToCloud,
+  saveOneAuction, updateOneAuction, deleteOneAuction,
+  loadAuctionsFromCloud, loadUsersFromCloud,
+} from './firebase';
 import './index.css';
 
-/* ─── LocalStorage helpers ─── */
+/* ─── LocalStorage fallback helpers ─── */
 const STORAGE_KEY = 'sealed_auction_data';
 const USERS_KEY = 'sealed_auction_users';
 
-const loadFromStorage = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { console.error('Failed to load auctions', e); }
-  return [];
-};
+const loadLocal = () => { try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch(e){} return []; };
+const saveLocal = (a) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); } catch(e){} };
+const loadLocalUsers = () => { try { const r = localStorage.getItem(USERS_KEY); if (r) return JSON.parse(r); } catch(e){} return []; };
+const saveLocalUsers = (u) => { try { localStorage.setItem(USERS_KEY, JSON.stringify(u)); } catch(e){} };
 
-const saveToStorage = (auctions) => {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(auctions)); }
-  catch (e) { console.error('Failed to save auctions', e); }
-};
-
-const loadUsers = () => {
-  try {
-    const raw = localStorage.getItem(USERS_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { console.error('Failed to load users', e); }
-  return [];
-};
-
-const saveUsers = (users) => {
-  try { localStorage.setItem(USERS_KEY, JSON.stringify(users)); }
-  catch (e) { console.error('Failed to save users', e); }
-};
+const useCloud = isFirebaseConfigured();
 
 /* ─── Particle Background ─── */
 const ParticleCanvas = () => {
@@ -92,22 +80,15 @@ function App() {
   const [pageHistory, setPageHistory] = useState([]);
   const [user, setUser] = useState(null);
   const [authMode, setAuthMode] = useState('signup');
+  const [syncStatus, setSyncStatus] = useState(useCloud ? 'connecting' : 'local'); // 'local' | 'connecting' | 'synced'
 
-  // Navigate forward — push current page onto history
   const navigateTo = useCallback((newPage) => {
-    setPageRaw(prev => {
-      setPageHistory(h => [...h, prev]);
-      return newPage;
-    });
+    setPageRaw(prev => { setPageHistory(h => [...h, prev]); return newPage; });
   }, []);
 
-  // Go back one step
   const goBack = useCallback(() => {
     setPageHistory(prev => {
-      if (prev.length === 0) {
-        setPageRaw('home');
-        return prev;
-      }
+      if (prev.length === 0) { setPageRaw('home'); return prev; }
       const history = [...prev];
       const lastPage = history.pop();
       setPageRaw(lastPage);
@@ -122,59 +103,72 @@ function App() {
   const [formError, setFormError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // ══════ PERSISTENT STATE ══════
-  const [auctions, setAuctions] = useState(() => loadFromStorage());
-  const [registeredUsers, setRegisteredUsers] = useState(() => loadUsers());
+  // ══════ STATE (Cloud or Local) ══════
+  const [auctions, setAuctions] = useState(() => loadLocal());
+  const [registeredUsers, setRegisteredUsers] = useState(() => loadLocalUsers());
+  const isListeningRef = useRef(false);
 
-  useEffect(() => { saveToStorage(auctions); }, [auctions]);
-  useEffect(() => { saveUsers(registeredUsers); }, [registeredUsers]);
-
-  // ══════ CROSS-TAB AUTO-SYNC ══════
-  // When another tab/window changes localStorage, this tab auto-updates.
-  // This works across multiple browser tabs on the SAME device.
+  // ── FIREBASE REAL-TIME SYNC ──
+  // When Firebase is configured, listen for real-time changes from ALL devices.
+  // This means if Laptop A creates an auction, Laptop B sees it INSTANTLY.
   useEffect(() => {
-    const handleStorageChange = (e) => {
+    if (!useCloud || isListeningRef.current) return;
+    isListeningRef.current = true;
+
+    const unsubAuctions = listenToAuctions((cloudAuctions) => {
+      setAuctions(cloudAuctions);
+      saveLocal(cloudAuctions); // keep local copy as backup
+      setSyncStatus('synced');
+    });
+
+    const unsubUsers = listenToUsers((cloudUsers) => {
+      setRegisteredUsers(cloudUsers);
+      saveLocalUsers(cloudUsers);
+    });
+
+    return () => {
+      if (typeof unsubAuctions === 'function') unsubAuctions();
+      if (typeof unsubUsers === 'function') unsubUsers();
+      isListeningRef.current = false;
+    };
+  }, []);
+
+  // ── LOCAL-ONLY FALLBACK (when Firebase not configured) ──
+  useEffect(() => {
+    if (useCloud) return;
+    saveLocal(auctions);
+  }, [auctions]);
+
+  useEffect(() => {
+    if (useCloud) return;
+    saveLocalUsers(registeredUsers);
+  }, [registeredUsers]);
+
+  // Cross-tab sync for local mode
+  useEffect(() => {
+    if (useCloud) return;
+    const handler = (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          const updated = JSON.parse(e.newValue);
-          setAuctions(updated);
-        } catch (err) { /* ignore parse errors */ }
+        try { setAuctions(JSON.parse(e.newValue)); } catch(err){}
       }
       if (e.key === USERS_KEY && e.newValue) {
-        try {
-          const updated = JSON.parse(e.newValue);
-          setRegisteredUsers(updated);
-        } catch (err) { /* ignore */ }
+        try { setRegisteredUsers(JSON.parse(e.newValue)); } catch(err){}
       }
     };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
   }, []);
 
-  // ══════ POLLING AUTO-REFRESH (same tab fallback) ══════
-  // Polls localStorage every 3 seconds to pick up changes from other tabs.
-  // The storage event doesn't fire for the tab that made the change,
-  // so this ensures data stays fresh even within the same tab.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const fresh = loadFromStorage();
-      setAuctions(prev => {
-        const prevStr = JSON.stringify(prev);
-        const freshStr = JSON.stringify(fresh);
-        if (prevStr !== freshStr) return fresh;
-        return prev;
-      });
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // ══════ AUCTION OPERATIONS ══════
+  // ══════ AUCTION OPERATIONS (sync to cloud automatically) ══════
   const addAuction = (auction) => {
     setAuctions(prev => [...prev, auction]);
+    if (useCloud) saveOneAuction(auction);
+    else saveLocal([...auctions, auction]);
   };
 
   const updateAuction = (auctionId, updates) => {
     setAuctions(prev => prev.map(a => a.id === auctionId ? { ...a, ...updates } : a));
+    if (useCloud) updateOneAuction(auctionId, updates);
   };
 
   const findAuctionByCode = (code) => {
@@ -182,20 +176,24 @@ function App() {
   };
 
   const addParticipant = (auctionId, participant) => {
-    setAuctions(prev => prev.map(a => {
-      if (a.id === auctionId) {
-        const exists = a.participants.some(
-          p => p.name === participant.name && p.address === participant.address
-        );
-        if (exists) return a;
-        return { ...a, participants: [...a.participants, participant] };
-      }
-      return a;
-    }));
+    setAuctions(prev => {
+      const updated = prev.map(a => {
+        if (a.id === auctionId) {
+          const exists = a.participants.some(p => p.name === participant.name && p.address === participant.address);
+          if (exists) return a;
+          const newA = { ...a, participants: [...a.participants, participant] };
+          if (useCloud) saveOneAuction(newA);
+          return newA;
+        }
+        return a;
+      });
+      return updated;
+    });
   };
 
   const deleteAuction = (auctionId) => {
     setAuctions(prev => prev.filter(a => a.id !== auctionId));
+    if (useCloud) deleteOneAuction(auctionId);
   };
 
   // Auto-delete ended auctions after 60 seconds
@@ -203,10 +201,14 @@ function App() {
     const interval = setInterval(() => {
       setAuctions(prev => {
         const now = Date.now();
-        return prev.filter(a => {
-          if (a.status === 'ended' && a.endedAt && (now - a.endedAt > 60000)) return false;
+        const filtered = prev.filter(a => {
+          if (a.status === 'ended' && a.endedAt && (now - a.endedAt > 60000)) {
+            if (useCloud) deleteOneAuction(a.id);
+            return false;
+          }
           return true;
         });
+        return filtered;
       });
     }, 10000);
     return () => clearInterval(interval);
@@ -222,7 +224,9 @@ function App() {
     const exists = registeredUsers.find(u => u.name.toLowerCase() === formName.trim().toLowerCase());
     if (exists) { setFormError('That name is already taken. Try logging in or use a different name.'); return; }
     const newUser = { name: formName.trim(), password: formPassword, role: formRole };
-    setRegisteredUsers(prev => [...prev, newUser]);
+    const newUsers = [...registeredUsers, newUser];
+    setRegisteredUsers(newUsers);
+    if (useCloud) saveUsersToCloud(newUsers);
     setUser(newUser);
     navigateTo(formRole);
   };
@@ -244,10 +248,7 @@ function App() {
     setUser(null);
     setPageRaw('home');
     setPageHistory([]);
-    setFormName('');
-    setFormPassword('');
-    setFormRole('');
-    setFormError('');
+    setFormName(''); setFormPassword(''); setFormRole(''); setFormError('');
   };
 
   const handleBrowseJoin = (auction) => {
@@ -256,13 +257,16 @@ function App() {
   };
 
   const goToAuth = (mode, role = '') => {
-    setAuthMode(mode);
-    setFormRole(role);
-    setFormError('');
-    setFormName('');
-    setFormPassword('');
-    setShowPassword(false);
+    setAuthMode(mode); setFormRole(role); setFormError('');
+    setFormName(''); setFormPassword(''); setShowPassword(false);
     navigateTo('auth');
+  };
+
+  // Sync status indicator
+  const SyncBadge = () => {
+    if (!useCloud) return <span className="sync-badge local" title="Local mode — data stays on this browser only">💾 Local</span>;
+    if (syncStatus === 'connecting') return <span className="sync-badge connecting">🔄 Connecting...</span>;
+    return <span className="sync-badge synced" title="Real-time sync active across all devices">☁️ Synced</span>;
   };
 
   /* ── HOME PAGE ── */
@@ -271,7 +275,7 @@ function App() {
       <div className="home-container">
         <ParticleCanvas />
         <nav className="hero-nav">
-          <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2></div>
+          <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2><SyncBadge /></div>
           <div className="nav-actions">
             <button className="btn ghost-btn" onClick={() => navigateTo('browse')}>Browse Auctions</button>
             <button className="btn ghost-btn" onClick={() => goToAuth('login')}>Log In</button>
@@ -340,7 +344,7 @@ function App() {
       <div className="home-container">
         <ParticleCanvas />
         <nav className="hero-nav">
-          <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2></div>
+          <div className="nav-brand"><span className="brand-icon">🛡️</span><h2>Sealed Auction</h2><SyncBadge /></div>
           <div className="nav-actions">
             <button className="btn ghost-btn" onClick={goBack}>← Back</button>
             <button className="btn primary-btn" onClick={() => goToAuth('signup')}>Get Started</button>
@@ -352,7 +356,7 @@ function App() {
     );
   }
 
-  /* ── AUTH PAGE (SIGN UP / LOG IN) ── */
+  /* ── AUTH PAGE ── */
   if (page === 'auth') {
     const isLogin = authMode === 'login';
     return (
@@ -396,9 +400,7 @@ function App() {
           </form>
           <p className="auth-switch">
             {isLogin ? "Don't have an account? " : 'Already have an account? '}
-            <button className="link-btn" onClick={() => { setAuthMode(isLogin ? 'signup' : 'login'); setFormError(''); }}>
-              {isLogin ? 'Sign Up' : 'Log In'}
-            </button>
+            <button className="link-btn" onClick={() => { setAuthMode(isLogin ? 'signup' : 'login'); setFormError(''); }}>{isLogin ? 'Sign Up' : 'Log In'}</button>
           </p>
           <button className="btn ghost-btn" style={{ marginTop: '0.5rem' }} onClick={goBack}>← Back</button>
         </div>
