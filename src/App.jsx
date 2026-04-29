@@ -297,7 +297,7 @@ function App() {
               <div className="hero-stat"><span className="hero-stat-num">Auto</span><span className="hero-stat-label">Refunds</span></div>
             </div>
           </div>
-          <div className="hero-visual"><img src="/product.png" alt="Digital Collectible" className="hero-img" /></div>
+          <div className="hero-visual"><img src={`${import.meta.env.BASE_URL}product.png`} alt="Digital Collectible" className="hero-img" /></div>
         </section>
         {auctions.length > 0 && (
           <section className="home-auctions-preview">

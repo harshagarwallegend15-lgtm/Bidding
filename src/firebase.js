@@ -34,6 +34,15 @@ const db = getDatabase(app);
 const auctionsRef = ref(db, 'auctions');
 const usersRef = ref(db, 'users');
 
+// ══════ NORMALIZE (Firebase drops empty arrays) ══════
+const normalizeAuction = (a) => ({
+  ...a,
+  participants: Array.isArray(a.participants) ? a.participants : [],
+  bids: Array.isArray(a.bids) ? a.bids : [],
+  results: Array.isArray(a.results) ? a.results : [],
+  losers: Array.isArray(a.losers) ? a.losers : [],
+});
+
 // ══════ AUCTION OPERATIONS ══════
 
 // Save all auctions to Firebase
@@ -82,7 +91,7 @@ export const loadAuctionsFromCloud = async () => {
   try {
     const snapshot = await get(auctionsRef);
     if (snapshot.exists()) {
-      return Object.values(snapshot.val());
+      return Object.values(snapshot.val()).map(normalizeAuction);
     }
   } catch (e) {
     console.error('Firebase load error:', e);
@@ -94,7 +103,7 @@ export const loadAuctionsFromCloud = async () => {
 export const listenToAuctions = (callback) => {
   return onValue(auctionsRef, (snapshot) => {
     if (snapshot.exists()) {
-      callback(Object.values(snapshot.val()));
+      callback(Object.values(snapshot.val()).map(normalizeAuction));
     } else {
       callback([]);
     }

@@ -22,7 +22,7 @@ const CreateAuctionForm = ({ onCreated }) => {
       code: generateCode(),
       title: title || 'Untitled Auction',
       description: description || 'No description provided.',
-      imageUrl: imageUrl || '/product.png',
+      imageUrl: imageUrl || `${import.meta.env.BASE_URL}product.png`,
       commitDuration: commitHours * 60 * 60 * 1000,
       revealDuration: revealHours * 60 * 60 * 1000,
       minBid,
